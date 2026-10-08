@@ -116,6 +116,13 @@ carries a table of the guide line numbers behind each one.
 - Histogram's "0 = auto" suffix hack on a numeric field became a bin-count
   select that names Sturges' rule.
 
+### Multiple projects (2026-10-08)
+
+- Project store is now a workspace of projects with an active id; new
+  `ProjectSwitcher` in the sidebar header creates (blank, Define phase),
+  switches, renames and deletes projects. Existing single-project data migrates
+  in as the first project. Tools are unchanged.
+
 ## In Progress
 
 - None.

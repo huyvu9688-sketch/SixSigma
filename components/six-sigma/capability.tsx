@@ -6,7 +6,9 @@ import {
   Bar,
   CartesianGrid,
   ComposedChart,
+  ErrorBar,
   ReferenceLine,
+  Scatter,
   XAxis,
   YAxis,
 } from "recharts"
@@ -34,6 +36,8 @@ import {
   TextField,
   ToolLink,
   fmt,
+  toneClass,
+  useNumberField,
   useSignedNumberField,
   type Tone,
 } from "@/components/calculator-primitives"
@@ -46,6 +50,7 @@ import {
   parseNumberList,
   stdDev,
   sturgesBins,
+  subgroupCapability,
   toNumber,
 } from "@/lib/six-sigma/stats"
 import { useSixSigmaProject, type Project } from "@/lib/six-sigma/project-store"
@@ -54,6 +59,11 @@ import { RulerIcon, SigmaIcon } from "lucide-react"
 const chartConfig = {
   count: { label: "Frequency", color: "var(--chart-1)" },
   curve: { label: "Normal fit", color: "var(--chart-4)" },
+  outOfSpec: { label: "Beyond spec", color: "var(--destructive)" },
+} satisfies ChartConfig
+
+const subgroupChartConfig = {
+  median: { label: "Subgroup median", color: "var(--chart-2)" },
 } satisfies ChartConfig
 
 function cpkTone(cpk: number): Tone {
@@ -69,6 +79,7 @@ export function CapabilityTool() {
   const [source, setSource] = React.useState<Source>("data")
   const manualMean = useSignedNumberField(75)
   const manualSd = useSignedNumberField(2.5)
+  const subgroupSizeField = useNumberField(5)
 
   const values = parseNumberList(project.measurementsRaw)
   const dataMean = meanOf(values)
@@ -95,17 +106,32 @@ export function CapabilityTool() {
   const bins = sturgesBins(values.length)
   const hist = histogram(values, bins)
   const binWidth = hist.length > 1 ? hist[1].midpoint - hist[0].midpoint : 1
-  const chartData = hist.map((b) => ({
-    midpoint: Number(b.midpoint.toFixed(4)),
-    bin: `${b.lo.toFixed(2)}–${b.hi.toFixed(2)}`,
-    count: b.count,
-    // Expected frequency if the data were normal with this mean and σ, scaled
-    // to the same axis as the bin counts.
-    curve:
-      sd > 0
-        ? (normalPdf((b.midpoint - m) / sd) / sd) * values.length * binWidth
-        : 0,
-  }))
+  // Expected frequency if the data were normal with this mean and σ, scaled
+  // to the same axis as the bin counts.
+  const curveAt = (midpoint: number) =>
+    sd > 0
+      ? (normalPdf((midpoint - m) / sd) / sd) * values.length * binWidth
+      : 0
+  const chartData = hist.map((b) => {
+    const curve = curveAt(b.midpoint)
+    const beyondSpec =
+      (hasLsl && b.midpoint <= lsl) || (hasUsl && b.midpoint >= usl)
+    return {
+      midpoint: Number(b.midpoint.toFixed(4)),
+      bin: `${b.lo.toFixed(2)}–${b.hi.toFixed(2)}`,
+      count: b.count,
+      curve,
+      // Same curve, but only where the normal fit falls outside spec, so the
+      // tail risk reads as a shaded hill rather than a number in a box.
+      outOfSpec: beyondSpec ? curve : 0,
+    }
+  })
+
+  const subgroupSize = Math.max(Math.round(subgroupSizeField.value), 2)
+  const subgroups =
+    usingData && bothLimits
+      ? subgroupCapability(values, subgroupSize, usl, lsl)
+      : []
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -272,6 +298,15 @@ export function CapabilityTool() {
                     label={{ value: "Target", position: "top", fontSize: 11 }}
                   />
                 ) : null}
+                {enoughData && cap.hasSpread ? (
+                  <ReferenceLine
+                    x={Number(m.toFixed(4))}
+                    ifOverflow="extendDomain"
+                    stroke="var(--muted-foreground)"
+                    strokeDasharray="2 2"
+                    label={{ value: "μ", position: "top", fontSize: 11 }}
+                  />
+                ) : null}
                 <ChartTooltip
                   cursor={false}
                   content={
@@ -298,6 +333,17 @@ export function CapabilityTool() {
                   strokeWidth={2}
                   dot={false}
                   isAnimationActive={false}
+                />
+                <Area
+                  dataKey="outOfSpec"
+                  name="Beyond spec"
+                  type="monotone"
+                  stroke="none"
+                  fill="var(--color-outOfSpec)"
+                  fillOpacity={0.45}
+                  dot={false}
+                  isAnimationActive={false}
+                  legendType="none"
                 />
               </ComposedChart>
             </ChartContainer>
@@ -395,6 +441,151 @@ export function CapabilityTool() {
             in standard deviations, and capability is that divided by three, so
             Cpk 1.33 is a 4σ process.
           </SectionNote>
+
+          {usingData && bothLimits && values.length > 0 ? (
+            <div className="flex flex-col gap-3 border-t pt-4">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">
+                    Cpk stability by subgroup
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Splits the measurements into subgroups of{" "}
+                    {subgroupSize}, most recent last, so drift shows up before
+                    it shows up in the overall Cpk.
+                  </p>
+                </div>
+                <Field
+                  id="cap-subgroup-size"
+                  label="Subgroup size"
+                  className="w-28"
+                  raw={subgroupSizeField.raw}
+                  setRaw={subgroupSizeField.setRaw}
+                />
+              </div>
+              {subgroups.length >= 2 ? (
+                <>
+                  <ChartContainer
+                    config={subgroupChartConfig}
+                    className="h-56 w-full"
+                  >
+                    <ComposedChart
+                      data={subgroups.map((s) => ({
+                        name: String(s.index + 1),
+                        median: s.median,
+                        errRange: [s.median - s.min, s.max - s.median],
+                        min: s.min,
+                        max: s.max,
+                        cpk: s.cpk,
+                      }))}
+                      margin={{ top: 8, right: 24 }}
+                    >
+                      <CartesianGrid vertical={false} />
+                      <XAxis
+                        dataKey="name"
+                        type="category"
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 10 }}
+                        label={{
+                          value: "Subgroup (oldest → newest)",
+                          position: "insideBottom",
+                          offset: -4,
+                          fontSize: 10,
+                        }}
+                      />
+                      <YAxis
+                        domain={["auto", "auto"]}
+                        tickLine={false}
+                        axisLine={false}
+                        width={40}
+                      />
+                      <ReferenceLine
+                        y={lsl}
+                        stroke="var(--destructive)"
+                        strokeDasharray="4 4"
+                        label={{ value: "LSL", position: "right", fontSize: 11 }}
+                      />
+                      <ReferenceLine
+                        y={usl}
+                        stroke="var(--destructive)"
+                        strokeDasharray="4 4"
+                        label={{ value: "USL", position: "right", fontSize: 11 }}
+                      />
+                      <ChartTooltip
+                        cursor={false}
+                        content={
+                          <ChartTooltipContent
+                            labelFormatter={(_, payload) =>
+                              `Subgroup ${payload?.[0]?.payload?.name ?? ""}`
+                            }
+                            formatter={(value, _, item) => {
+                              const p = item.payload as {
+                                min: number
+                                max: number
+                                cpk: number
+                              }
+                              return (
+                                <div className="flex w-full items-center justify-between gap-3">
+                                  <span className="text-muted-foreground">
+                                    Median (range {p.min.toFixed(2)}–
+                                    {p.max.toFixed(2)})
+                                  </span>
+                                  <span className="font-mono font-medium text-foreground tabular-nums">
+                                    {Number(value).toFixed(2)}, Cpk{" "}
+                                    {p.cpk.toFixed(2)}
+                                  </span>
+                                </div>
+                              )
+                            }}
+                          />
+                        }
+                      />
+                      <Scatter dataKey="median" fill="var(--color-median)">
+                        <ErrorBar
+                          dataKey="errRange"
+                          width={6}
+                          strokeWidth={2}
+                          stroke="var(--color-median)"
+                          direction="y"
+                        />
+                      </Scatter>
+                    </ComposedChart>
+                  </ChartContainer>
+                  <div className="flex flex-wrap gap-2">
+                    {subgroups.map((s) => (
+                      <div
+                        key={s.index}
+                        className="flex items-center gap-1 rounded-md border bg-muted/30 px-2 py-1 text-xs"
+                      >
+                        <span className="text-muted-foreground">
+                          #{s.index + 1}
+                        </span>
+                        <span
+                          className={`font-semibold tabular-nums ${toneClass(cpkTone(s.cpk))}`}
+                        >
+                          {s.cpk.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <SectionNote>
+                    Each point is the subgroup median with its min–max range;
+                    the chip row is that subgroup&apos;s own Cpk. A steady
+                    Cpk near or above the overall value means the process is
+                    stable; a downward run is drift worth chasing before it
+                    shows up as scrap.
+                  </SectionNote>
+                </>
+              ) : (
+                <SectionNote>
+                  Need at least {subgroupSize * 2} measurements for two
+                  subgroups of {subgroupSize}.
+                </SectionNote>
+              )}
+            </div>
+          ) : null}
+
           <FlowFooter>
             <ToolLink href="/qc-tools/control-chart">
               Is it in control?

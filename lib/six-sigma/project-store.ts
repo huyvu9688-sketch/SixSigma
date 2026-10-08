@@ -394,10 +394,97 @@ export const TOLLGATE_ITEMS: Record<DmaicPhase, string[]> = {
 }
 
 // --- Store ---------------------------------------------------------------
+//
+// The store holds a workspace of several projects plus the id of the active
+// one. Every tool still sees only the active project through
+// useSixSigmaProject(); switching just swaps which project that is.
 
+export type ProjectSummary = { id: string; name: string; phase: DmaicPhase }
+
+type Workspace = {
+  version: number
+  activeId: string
+  order: string[]
+  projects: Record<string, Project>
+}
+
+const WORKSPACE_KEY = "wanek-six-sigma-workspace"
+const SEED_ID = "example"
 const SEED = createSeedProject()
-let state: Project | null = null
+const SEED_WORKSPACE: Workspace = {
+  version: PROJECT_VERSION,
+  activeId: SEED_ID,
+  order: [SEED_ID],
+  projects: { [SEED_ID]: SEED },
+}
+
+let workspace: Workspace | null = null
 const listeners = new Set<() => void>()
+
+/** An empty project: same shape as the example, nothing filled in. */
+export function createBlankProject(name: string): Project {
+  const none = (): IdText[] => []
+  const blankRate = (): DefectRateInput => ({
+    units: "",
+    opportunities: "",
+    defects: "",
+    costPerDefect: "",
+  })
+  return {
+    version: PROJECT_VERSION,
+    name,
+    phase: "define",
+    charter: {
+      problem: "",
+      goal: "",
+      businessCase: "",
+      scopeIn: "",
+      scopeOut: "",
+      sponsor: "",
+      team: [],
+      customersInternal: "",
+      customersExternal: "",
+      ctqs: [],
+      schedule: Object.fromEntries(
+        DMAIC_PHASES.map((phase) => [phase, ""])
+      ) as Record<DmaicPhase, string>,
+    },
+    sipoc: {
+      suppliers: none(),
+      inputs: none(),
+      process: none(),
+      outputs: none(),
+      customers: none(),
+    },
+    baseline: blankRate(),
+    improved: blankRate(),
+    copq: {
+      externalFailure: "",
+      internalFailure: "",
+      prevention: "",
+      appraisal: "",
+      sales: "",
+    },
+    measurementsRaw: "",
+    spec: { usl: "", lsl: "", target: "", unit: "" },
+    defectCategories: [],
+    fishbone: {
+      effect: "",
+      causes: Object.fromEntries(
+        FISHBONE_CATEGORIES.map((cat) => [cat, none()])
+      ) as Record<FishboneCategory, IdText[]>,
+    },
+    fiveWhys: { problem: "", whys: none() },
+    fmea: [],
+    controlPlan: [],
+    tollgates: Object.fromEntries(
+      DMAIC_PHASES.map((phase) => [
+        phase,
+        TOLLGATE_ITEMS[phase].map(() => false),
+      ])
+    ) as Record<DmaicPhase, boolean[]>,
+  }
+}
 
 function mergeWithSeed(parsed: unknown): Project {
   if (!parsed || typeof parsed !== "object") return SEED
@@ -426,18 +513,48 @@ function mergeWithSeed(parsed: unknown): Project {
   return merged
 }
 
-function load(): Project {
+function load(): Workspace {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    return raw ? mergeWithSeed(JSON.parse(raw)) : SEED
+    const raw = window.localStorage.getItem(WORKSPACE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Workspace>
+      const projects = Object.fromEntries(
+        Object.entries(parsed.projects ?? {}).map(([id, proj]) => [
+          id,
+          mergeWithSeed(proj),
+        ])
+      )
+      const order = (parsed.order ?? []).filter((id) => id in projects)
+      if (order.length > 0) {
+        const activeId =
+          parsed.activeId && parsed.activeId in projects
+            ? parsed.activeId
+            : order[0]
+        return { version: PROJECT_VERSION, activeId, order, projects }
+      }
+    }
+    // Single-project storage from before the workspace existed.
+    const legacy = window.localStorage.getItem(STORAGE_KEY)
+    if (legacy) {
+      return {
+        ...SEED_WORKSPACE,
+        projects: { [SEED_ID]: mergeWithSeed(JSON.parse(legacy)) },
+      }
+    }
   } catch {
-    return SEED
+    // Corrupt storage: fall through to the example.
   }
+  return SEED_WORKSPACE
+}
+
+function getWorkspace(): Workspace {
+  if (workspace === null) workspace = load()
+  return workspace
 }
 
 function getSnapshot(): Project {
-  if (state === null) state = load()
-  return state
+  const ws = getWorkspace()
+  return ws.projects[ws.activeId]
 }
 
 function getServerSnapshot(): Project {
@@ -455,18 +572,104 @@ function emit() {
 
 export type ProjectUpdater = (prev: Project) => Project
 
-export function updateProject(updater: ProjectUpdater) {
-  state = updater(getSnapshot())
+function commit(next: Workspace) {
+  workspace = next
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    window.localStorage.setItem(WORKSPACE_KEY, JSON.stringify(next))
   } catch {
     // Storage may be unavailable (private mode, quota); keep in-memory state.
   }
   emit()
 }
 
+export function updateProject(updater: ProjectUpdater) {
+  const ws = getWorkspace()
+  commit({
+    ...ws,
+    projects: {
+      ...ws.projects,
+      [ws.activeId]: updater(ws.projects[ws.activeId]),
+    },
+  })
+}
+
 export function resetProject() {
   updateProject(() => createSeedProject())
+}
+
+/** Create an empty project and make it the active one. */
+export function createProject(name: string) {
+  const ws = getWorkspace()
+  const id = newId("proj")
+  commit({
+    ...ws,
+    activeId: id,
+    order: [...ws.order, id],
+    projects: {
+      ...ws.projects,
+      [id]: createBlankProject(name.trim() || "Untitled project"),
+    },
+  })
+}
+
+export function switchProject(id: string) {
+  const ws = getWorkspace()
+  if (id === ws.activeId || !(id in ws.projects)) return
+  commit({ ...ws, activeId: id })
+}
+
+/** Delete a project. The last remaining one cannot be deleted. */
+export function deleteProject(id: string) {
+  const ws = getWorkspace()
+  if (ws.order.length <= 1 || !(id in ws.projects)) return
+  const order = ws.order.filter((x) => x !== id)
+  const projects = { ...ws.projects }
+  delete projects[id]
+  commit({
+    ...ws,
+    order,
+    projects,
+    activeId: ws.activeId === id ? order[0] : ws.activeId,
+  })
+}
+
+const SERVER_LIST: ProjectSummary[] = [
+  { id: SEED_ID, name: SEED.name, phase: SEED.phase },
+]
+let listCache: { ws: Workspace; list: ProjectSummary[] } | null = null
+
+function getListSnapshot(): ProjectSummary[] {
+  const ws = getWorkspace()
+  if (listCache?.ws !== ws) {
+    listCache = {
+      ws,
+      list: ws.order.map((id) => ({
+        id,
+        name: ws.projects[id].name,
+        phase: ws.projects[id].phase,
+      })),
+    }
+  }
+  return listCache.list
+}
+
+const getServerList = () => SERVER_LIST
+const getActiveId = () => getWorkspace().activeId
+const getServerActiveId = () => SEED_ID
+
+/** All projects plus the active id, for the project switcher. */
+export function useProjectList() {
+  const projects = React.useSyncExternalStore(
+    subscribe,
+    getListSnapshot,
+    getServerList
+  )
+  const activeId = React.useSyncExternalStore(
+    subscribe,
+    getActiveId,
+    getServerActiveId
+  )
+  return { projects, activeId }
 }
 
 /** Read the shared project and get an updater. Client components only. */

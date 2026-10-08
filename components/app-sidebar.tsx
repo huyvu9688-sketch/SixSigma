@@ -8,6 +8,7 @@ import { NavDocuments } from "@/components/nav-documents"
 import { NavMain, type NavSection } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
+import { ProjectSwitcher } from "@/components/project-switcher"
 import { Button } from "@/components/ui/button"
 import {
   Sidebar,
@@ -191,6 +192,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <ProjectSwitcher />
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>

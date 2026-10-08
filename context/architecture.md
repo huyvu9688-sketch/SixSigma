@@ -49,8 +49,13 @@ Two separate things, neither of which is a backend:
 
 1. **Dashboard mock data** — `app/data.json`, imported directly into
    `app/page.tsx` and passed to `DataTable`.
-2. **The Six Sigma project** — one `Project` object in `localStorage` under
-   `wanek-six-sigma-project`, exposed by `useSixSigmaProject()` in
+2. **The Six Sigma workspace** — several `Project` objects plus the active id in
+   `localStorage` under `wanek-six-sigma-workspace` (a project saved under the
+   old `wanek-six-sigma-project` key is migrated in as the first project). Tools
+   only ever see the active project; `components/project-switcher.tsx` (sidebar
+   header) creates, switches, renames and deletes projects via
+   `createProject` / `switchProject` / `deleteProject` / `useProjectList()`.
+   The active project is exposed by `useSixSigmaProject()` in
    `lib/six-sigma/project-store.ts`. It is built on `useSyncExternalStore`: the
    server snapshot is the seeded example project, so server render and first
    client render agree, and the persisted copy takes over immediately after

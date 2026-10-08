@@ -258,6 +258,54 @@ export function capability({ usl, lsl, mean: m, stdDev: sd }: CapabilityInput) {
   }
 }
 
+export type SubgroupCapabilityPoint = {
+  index: number
+  n: number
+  min: number
+  max: number
+  median: number
+  mean: number
+  cpk: number
+}
+
+/**
+ * Splits values (assumed to be in time order) into fixed-size subgroups,
+ * most recent first, and reports Cpk per subgroup so a run of them shows
+ * whether capability is stable or drifting (cf. a Cpk-by-subgroup boxplot).
+ * A short leftover subgroup at the oldest end is dropped, never the newest.
+ */
+export function subgroupCapability(
+  values: number[],
+  size: number,
+  usl: number,
+  lsl: number,
+  maxSubgroups = 12
+): SubgroupCapabilityPoint[] {
+  if (size < 2 || values.length < size) return []
+  const groups: number[][] = []
+  for (
+    let end = values.length;
+    end - size >= 0 && groups.length < maxSubgroups;
+    end -= size
+  ) {
+    groups.unshift(values.slice(end - size, end))
+  }
+  return groups.map((g, index) => {
+    const m = mean(g)
+    const sd = stdDev(g)
+    const cap = capability({ usl, lsl, mean: m, stdDev: sd })
+    return {
+      index,
+      n: g.length,
+      min: Math.min(...g),
+      max: Math.max(...g),
+      median: median(g),
+      mean: m,
+      cpk: cap.cpk,
+    }
+  })
+}
+
 // --- Regression / correlation -------------------------------------------
 
 export function linearRegression(points: { x: number; y: number }[]) {
